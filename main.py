@@ -49,84 +49,96 @@ def delete_memory(chat_id):
         del memory[key]
 
 # ============================================
-# دریافت زمان از API
+# دریافت زمان از API - نسخه کامل
 # ============================================
 
 def get_tehran_time_from_api():
-    """دریافت زمان تهران از API WorldTime"""
-    try:
-        # روش اول: WorldTimeAPI
-        response = requests.get(
-            'http://worldtimeapi.org/api/timezone/Asia/Tehran',
-            timeout=5
-        )
-        
-        if response.status_code == 200:
-            data = response.json()
-            datetime_str = data.get('datetime', '')
-            if datetime_str:
-                # تبدیل به شیء datetime
-                dt = datetime.fromisoformat(datetime_str.replace('Z', '+00:00'))
-                return dt
-        
-        # روش دوم: TimeAPI (پشتیبان)
-        response = requests.get(
-            'https://timeapi.io/api/Time/current/zone?timeZone=Asia/Tehran',
-            timeout=5
-        )
-        
-        if response.status_code == 200:
-            data = response.json()
-            year = data.get('year')
-            month = data.get('month')
-            day = data.get('day')
-            hour = data.get('hour')
-            minute = data.get('minute')
-            seconds = data.get('seconds')
-            
-            if all([year, month, day, hour is not None, minute is not None, seconds is not None]):
-                return datetime(year, month, day, hour, minute, seconds)
-        
-        # روش سوم: استفاده از زمان محلی (در صورت عدم دسترسی به API)
-        from datetime import timedelta, timezone
-        tehran_offset = timedelta(hours=3, minutes=30)
-        return datetime.now(timezone.utc).astimezone() + tehran_offset
-        
-    except Exception as e:
-        logger.error(f"Time API error: {e}")
-        # Fallback به زمان محلی
-        from datetime import timedelta, timezone
-        tehran_offset = timedelta(hours=3, minutes=30)
-        return datetime.now(timezone.utc).astimezone() + tehran_offset
-
-def format_persian_date(date):
-    """تبدیل تاریخ میلادی به شمسی"""
-    try:
-        # دریافت تاریخ شمسی از API
-        response = requests.get(
-            f'https://api.vercel.app/date?date={date.strftime("%Y-%m-%d")}',
-            timeout=3
-        )
-        
-        if response.status_code == 200:
-            data = response.json()
-            if data.get('persian'):
-                persian_date = data['persian']
-                return f"{persian_date['day']} {persian_date['month_name']} {persian_date['year']}، ساعت {date.strftime('%H:%M:%S')}"
-    except:
-        pass
+    """دریافت زمان تهران از APIهای مختلف"""
     
-    # روش دوم: محاسبه دستی تاریخ شمسی
+    # لیست APIهای زمان با پشتیبان
+    apis = [
+        {
+            'url': 'http://worldtimeapi.org/api/timezone/Asia/Tehran',
+            'method': 'GET',
+            'parser': lambda data: datetime.fromisoformat(data.get('datetime', '').replace('Z', '+00:00'))
+        },
+        {
+            'url': 'https://timeapi.io/api/Time/current/zone?timeZone=Asia/Tehran',
+            'method': 'GET',
+            'parser': lambda data: datetime(
+                data.get('year', 2024),
+                data.get('month', 1),
+                data.get('day', 1),
+                data.get('hour', 0),
+                data.get('minute', 0),
+                data.get('seconds', 0)
+            )
+        }
+    ]
+    
+    for api in apis:
+        try:
+            response = requests.get(api['url'], timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                dt = api['parser'](data)
+                if dt:
+                    logger.info(f"✅ Time fetched from: {api['url']}")
+                    return dt
+        except Exception as e:
+            logger.warning(f"⚠️ Time API failed: {api['url']} - {e}")
+            continue
+    
+    # Fallback: زمان محلی با offset تهران
+    logger.warning("⚠️ All time APIs failed, using local time")
+    from datetime import timedelta, timezone
+    tehran_offset = timedelta(hours=3, minutes=30)
+    return datetime.now(timezone.utc).astimezone() + tehran_offset
+
+def get_persian_date_from_api(date_obj):
+    """تبدیل تاریخ میلادی به شمسی با استفاده از API"""
+    
+    # APIهای تبدیل تاریخ
+    apis = [
+        {
+            'url': f'https://api.vercel.app/date?date={date_obj.strftime("%Y-%m-%d")}',
+            'parser': lambda data: data.get('persian', {})
+        },
+        {
+            'url': f'https://persian-date-api.vercel.app/api/convert?date={date_obj.strftime("%Y-%m-%d")}',
+            'parser': lambda data: data.get('result', {})
+        }
+    ]
+    
+    for api in apis:
+        try:
+            response = requests.get(api['url'], timeout=3)
+            if response.status_code == 200:
+                data = response.json()
+                persian = api['parser'](data)
+                if persian:
+                    day = persian.get('day', date_obj.day)
+                    month_name = persian.get('month_name', '')
+                    year = persian.get('year', date_obj.year)
+                    return f"{day} {month_name} {year}، ساعت {date_obj.strftime('%H:%M:%S')}"
+        except:
+            continue
+    
+    # Fallback: محاسبه دستی تاریخ شمسی
+    return manual_persian_date(date_obj)
+
+def manual_persian_date(date):
+    """محاسبه دستی تاریخ شمسی (الگوریتم دقیق)"""
     persian_months = [
         'فروردین', 'اردیبهشت', 'خرداد', 'تیر', 'مرداد', 'شهریور',
         'مهر', 'آبان', 'آذر', 'دی', 'بهمن', 'اسفند'
     ]
     
-    # تبدیل میلادی به شمسی (الگوریتم ساده)
     gy = date.year
     gm = date.month
     gd = date.day
     
+    # الگوریتم تبدیل میلادی به شمسی
     if gm > 2:
         gy2 = gy + 1
     else:
@@ -137,18 +149,11 @@ def format_persian_date(date):
     if gm > 2:
         days += 31
     
+    month_days = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
     for i in range(1, gm):
-        if i in [1, 3, 5, 7, 8, 10, 12]:
-            days += 31
-        elif i == 2:
-            days += 28
-        else:
-            days += 30
+        days += month_days[i-1]
     
     jy = 0
-    jm = 1
-    jd = 0
-    
     for i in range(0, 10000):
         if i % 4 == 0:
             month_days = 31
@@ -166,6 +171,7 @@ def format_persian_date(date):
             jy = i + 1
             break
     
+    jm = 1
     for i in range(0, 12):
         if i < 6:
             month_days = 31
@@ -176,16 +182,16 @@ def format_persian_date(date):
             days -= month_days
         else:
             jm = i + 1
-            jd = days
             break
     
-    persian_date = f"{jd} {persian_months[jm-1]} {jy}، ساعت {date.strftime('%H:%M:%S')}"
-    return persian_date
+    jd = days
+    
+    return f"{jd} {persian_months[jm-1]} {jy}، ساعت {date.strftime('%H:%M:%S')}"
 
 def get_current_time():
-    """دریافت زمان و تاریخ کامل"""
+    """دریافت زمان و تاریخ کامل تهران"""
     dt = get_tehran_time_from_api()
-    return format_persian_date(dt)
+    return get_persian_date_from_api(dt)
 
 # ============================================
 # توابع کمکی
@@ -220,74 +226,40 @@ def extract_instagram_id(url):
 
 def download_tiktok(url):
     try:
+        # روش اول: tikwm
         response = requests.get(
             f'https://www.tikwm.com/api/?url={url}',
             timeout=15,
-            headers={'User-Agent': 'Mozilla/5.0'}
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         )
         data = response.json()
         if data.get('code') == 0 and data.get('data'):
-            video_url = data['data'].get('play') or data['data'].get('wmplay')
+            video_url = data['data'].get('play') or data['data'].get('wmplay') or data['data'].get('hdplay')
             if video_url:
                 return video_url
+        
+        # روش دوم: tikmate
+        response = requests.get(
+            f'https://tikmate.online/api/j/convert?url={url}',
+            timeout=15,
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        )
+        data = response.json()
+        if data.get('video_url'):
+            return data['video_url']
         
         raise Exception('ویدیو پیدا نشد')
     except Exception as e:
         logger.error(f"TikTok error: {e}")
         raise Exception(f"خطا در دانلود تیک تاک")
 
-def get_youtube_formats(youtube_id):
-    try:
-        qualities = []
-        
-        response = requests.get(
-            f'https://api.vevioz.com/api/button/mp4/{youtube_id}',
-            timeout=20,
-            headers={'User-Agent': 'Mozilla/5.0'}
-        )
-        
-        if response.status_code == 200:
-            try:
-                data = response.json()
-                if data.get('formats'):
-                    for fmt in data['formats']:
-                        if fmt.get('hasVideo') and fmt.get('hasAudio'):
-                            quality = fmt.get('qualityLabel', '')
-                            if quality:
-                                qualities.append({
-                                    'label': quality,
-                                    'url': fmt.get('url', ''),
-                                    'itag': fmt.get('itag', '')
-                                })
-                    return qualities
-            except:
-                pass
-        
-        return [
-            {'label': '720p', 'url': '', 'itag': ''},
-            {'label': '480p', 'url': '', 'itag': ''},
-            {'label': '360p', 'url': '', 'itag': ''}
-        ]
-        
-    except Exception as e:
-        logger.error(f"Get formats error: {e}")
-        return []
-
 def download_youtube_with_quality(youtube_id, quality):
     try:
-        quality_map = {
-            '720p': '18',
-            '480p': '135',
-            '360p': '18',
-            '240p': '133'
-        }
-        
-        itag = quality_map.get(quality, '18')
-        
+        # روش اول: vevioz
         response = requests.get(
             f'https://api.vevioz.com/api/button/mp4/{youtube_id}',
             timeout=20,
-            headers={'User-Agent': 'Mozilla/5.0'}
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         )
         
         if response.status_code == 200:
@@ -304,7 +276,7 @@ def download_youtube_with_quality(youtube_id, quality):
                 'https://www.y2mate.com/mates/en68/analyze/ajax',
                 data={'url': f'https://www.youtube.com/watch?v={youtube_id}', 'q': '360'},
                 headers={
-                    'User-Agent': 'Mozilla/5.0',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                     'Content-Type': 'application/x-www-form-urlencoded'
                 },
                 timeout=20
@@ -330,7 +302,9 @@ def download_instagram(url):
         if not insta_id:
             raise Exception('لینک اینستاگرام معتبر نیست')
         
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
         
         # روش اول: API رسمی
         response = requests.get(
@@ -357,6 +331,17 @@ def download_instagram(url):
             match = re.search(r'<video[^>]+src="([^"]+)"', html)
             if match:
                 return match.group(1)
+        
+        # روش سوم: oembed
+        response = requests.get(
+            f'https://api.instagram.com/oembed?url={url}',
+            timeout=15
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data.get('thumbnail_url'):
+                return data['thumbnail_url']
         
         raise Exception('ویدیو پیدا نشد')
         
@@ -722,7 +707,7 @@ def get_time():
     """دریافت زمان تهران از API"""
     return jsonify({
         'time': get_current_time(),
-        'datetime': get_tehran_time_from_api().isoformat()
+        'api_status': 'success'
     })
 
 @app.route('/set-webhook', methods=['GET'])
