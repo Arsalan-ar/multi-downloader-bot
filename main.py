@@ -1,12 +1,12 @@
 # main.py
-# Telegram Multi Downloader Bot - نسخه نهایی با Webhook
+# Telegram Multi Downloader Bot - نسخه با API زمان
 
 import os
 import re
 import json
 import logging
 import requests
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from flask import Flask, request, jsonify
 
 # ============================================
@@ -49,19 +49,147 @@ def delete_memory(chat_id):
         del memory[key]
 
 # ============================================
-# توابع کمکی
+# دریافت زمان از API
 # ============================================
 
-def get_tehran_time():
-    tehran_offset = timedelta(hours=3, minutes=30)
-    return datetime.now(timezone.utc).astimezone() + tehran_offset
+def get_tehran_time_from_api():
+    """دریافت زمان تهران از API WorldTime"""
+    try:
+        # روش اول: WorldTimeAPI
+        response = requests.get(
+            'http://worldtimeapi.org/api/timezone/Asia/Tehran',
+            timeout=5
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            datetime_str = data.get('datetime', '')
+            if datetime_str:
+                # تبدیل به شیء datetime
+                dt = datetime.fromisoformat(datetime_str.replace('Z', '+00:00'))
+                return dt
+        
+        # روش دوم: TimeAPI (پشتیبان)
+        response = requests.get(
+            'https://timeapi.io/api/Time/current/zone?timeZone=Asia/Tehran',
+            timeout=5
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            year = data.get('year')
+            month = data.get('month')
+            day = data.get('day')
+            hour = data.get('hour')
+            minute = data.get('minute')
+            seconds = data.get('seconds')
+            
+            if all([year, month, day, hour is not None, minute is not None, seconds is not None]):
+                return datetime(year, month, day, hour, minute, seconds)
+        
+        # روش سوم: استفاده از زمان محلی (در صورت عدم دسترسی به API)
+        from datetime import timedelta, timezone
+        tehran_offset = timedelta(hours=3, minutes=30)
+        return datetime.now(timezone.utc).astimezone() + tehran_offset
+        
+    except Exception as e:
+        logger.error(f"Time API error: {e}")
+        # Fallback به زمان محلی
+        from datetime import timedelta, timezone
+        tehran_offset = timedelta(hours=3, minutes=30)
+        return datetime.now(timezone.utc).astimezone() + tehran_offset
 
 def format_persian_date(date):
+    """تبدیل تاریخ میلادی به شمسی"""
+    try:
+        # دریافت تاریخ شمسی از API
+        response = requests.get(
+            f'https://api.vercel.app/date?date={date.strftime("%Y-%m-%d")}',
+            timeout=3
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data.get('persian'):
+                persian_date = data['persian']
+                return f"{persian_date['day']} {persian_date['month_name']} {persian_date['year']}، ساعت {date.strftime('%H:%M:%S')}"
+    except:
+        pass
+    
+    # روش دوم: محاسبه دستی تاریخ شمسی
     persian_months = [
         'فروردین', 'اردیبهشت', 'خرداد', 'تیر', 'مرداد', 'شهریور',
         'مهر', 'آبان', 'آذر', 'دی', 'بهمن', 'اسفند'
     ]
-    return date.strftime(f'%d {persian_months[date.month-1]} %Y، ساعت %H:%M:%S')
+    
+    # تبدیل میلادی به شمسی (الگوریتم ساده)
+    gy = date.year
+    gm = date.month
+    gd = date.day
+    
+    if gm > 2:
+        gy2 = gy + 1
+    else:
+        gy2 = gy
+    
+    days = 355666 + (365 * gy2) + int(gy2 / 4) - int(gy2 / 100) + int(gy2 / 400) - int((gy2 + 3) / 4) + gd
+    
+    if gm > 2:
+        days += 31
+    
+    for i in range(1, gm):
+        if i in [1, 3, 5, 7, 8, 10, 12]:
+            days += 31
+        elif i == 2:
+            days += 28
+        else:
+            days += 30
+    
+    jy = 0
+    jm = 1
+    jd = 0
+    
+    for i in range(0, 10000):
+        if i % 4 == 0:
+            month_days = 31
+        else:
+            month_days = 30
+        
+        if i % 4 == 0 and i % 100 != 0:
+            month_days = 31
+        if i % 400 == 0:
+            month_days = 31
+        
+        if days > month_days:
+            days -= month_days
+        else:
+            jy = i + 1
+            break
+    
+    for i in range(0, 12):
+        if i < 6:
+            month_days = 31
+        else:
+            month_days = 30
+        
+        if days > month_days:
+            days -= month_days
+        else:
+            jm = i + 1
+            jd = days
+            break
+    
+    persian_date = f"{jd} {persian_months[jm-1]} {jy}، ساعت {date.strftime('%H:%M:%S')}"
+    return persian_date
+
+def get_current_time():
+    """دریافت زمان و تاریخ کامل"""
+    dt = get_tehran_time_from_api()
+    return format_persian_date(dt)
+
+# ============================================
+# توابع کمکی
+# ============================================
 
 def extract_youtube_id(url):
     patterns = [
@@ -108,11 +236,53 @@ def download_tiktok(url):
         logger.error(f"TikTok error: {e}")
         raise Exception(f"خطا در دانلود تیک تاک")
 
-def download_youtube(url):
+def get_youtube_formats(youtube_id):
     try:
-        youtube_id = extract_youtube_id(url)
-        if not youtube_id:
-            raise Exception('لینک یوتیوب معتبر نیست')
+        qualities = []
+        
+        response = requests.get(
+            f'https://api.vevioz.com/api/button/mp4/{youtube_id}',
+            timeout=20,
+            headers={'User-Agent': 'Mozilla/5.0'}
+        )
+        
+        if response.status_code == 200:
+            try:
+                data = response.json()
+                if data.get('formats'):
+                    for fmt in data['formats']:
+                        if fmt.get('hasVideo') and fmt.get('hasAudio'):
+                            quality = fmt.get('qualityLabel', '')
+                            if quality:
+                                qualities.append({
+                                    'label': quality,
+                                    'url': fmt.get('url', ''),
+                                    'itag': fmt.get('itag', '')
+                                })
+                    return qualities
+            except:
+                pass
+        
+        return [
+            {'label': '720p', 'url': '', 'itag': ''},
+            {'label': '480p', 'url': '', 'itag': ''},
+            {'label': '360p', 'url': '', 'itag': ''}
+        ]
+        
+    except Exception as e:
+        logger.error(f"Get formats error: {e}")
+        return []
+
+def download_youtube_with_quality(youtube_id, quality):
+    try:
+        quality_map = {
+            '720p': '18',
+            '480p': '135',
+            '360p': '18',
+            '240p': '133'
+        }
+        
+        itag = quality_map.get(quality, '18')
         
         response = requests.get(
             f'https://api.vevioz.com/api/button/mp4/{youtube_id}',
@@ -126,13 +296,32 @@ def download_youtube(url):
                 if data.get('download'):
                     return data['download']
             except:
-                match = re.search(r'https?://[^"\'s]+\.mp4', response.text)
+                pass
+        
+        # روش دوم: y2mate
+        try:
+            response = requests.post(
+                'https://www.y2mate.com/mates/en68/analyze/ajax',
+                data={'url': f'https://www.youtube.com/watch?v={youtube_id}', 'q': '360'},
+                headers={
+                    'User-Agent': 'Mozilla/5.0',
+                    'Content-Type': 'application/x-www-form-urlencoded'
+                },
+                timeout=20
+            )
+            
+            if response.status_code == 200:
+                text = response.text
+                match = re.search(r'https?://[^"\'s]+\.mp4', text)
                 if match:
                     return match.group(0)
+        except:
+            pass
         
         raise Exception('ویدیو پیدا نشد')
+        
     except Exception as e:
-        logger.error(f"Youtube error: {e}")
+        logger.error(f"Youtube download error: {e}")
         raise Exception(f"خطا در دانلود یوتیوب")
 
 def download_instagram(url):
@@ -142,6 +331,8 @@ def download_instagram(url):
             raise Exception('لینک اینستاگرام معتبر نیست')
         
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        
+        # روش اول: API رسمی
         response = requests.get(
             f'https://www.instagram.com/p/{insta_id}/?__a=1&__d=dis',
             headers=headers,
@@ -154,7 +345,21 @@ def download_instagram(url):
             if video_url:
                 return video_url
         
+        # روش دوم: embed
+        response = requests.get(
+            f'https://www.instagram.com/p/{insta_id}/embed',
+            headers=headers,
+            timeout=15
+        )
+        
+        if response.status_code == 200:
+            html = response.text
+            match = re.search(r'<video[^>]+src="([^"]+)"', html)
+            if match:
+                return match.group(1)
+        
         raise Exception('ویدیو پیدا نشد')
+        
     except Exception as e:
         logger.error(f"Instagram error: {e}")
         raise Exception(f"خطا در دانلود اینستاگرام")
@@ -211,7 +416,7 @@ def send_video(chat_id, video_url, caption, reply_markup=None):
         data['reply_markup'] = json.dumps(reply_markup)
     
     try:
-        response = requests.post(url, data=data, timeout=30)
+        response = requests.post(url, data=data, timeout=60)
         return response.json()
     except Exception as e:
         logger.error(f"Send video error: {e}")
@@ -262,23 +467,43 @@ def get_back_keyboard():
         ]
     }
 
+def get_quality_keyboard(youtube_id):
+    qualities = ['720p', '480p', '360p', '240p']
+    
+    keyboard = {
+        'inline_keyboard': [
+            [
+                {'text': f'📺 {q}', 'callback_data': f'quality_{youtube_id}_{q}'}
+                for q in qualities[:2]
+            ],
+            [
+                {'text': f'📺 {q}', 'callback_data': f'quality_{youtube_id}_{q}'}
+                for q in qualities[2:]
+            ],
+            [
+                {'text': '🔙 بازگشت', 'callback_data': 'main_menu'}
+            ]
+        ]
+    }
+    return keyboard
+
 # ============================================
 # هندلرها
 # ============================================
 
 def handle_start(chat_id):
-    persian_date = format_persian_date(get_tehran_time())
+    current_time = get_current_time()
     
     message = f"""👋 به <b>{BOT_NAME}</b> خوش آمدید!
 
 🎯 این ربات به شما کمک می‌کند تا ویدیوهای مورد نظر خود را دانلود کنید:
 
 🎵 TikTok
-🎬 Youtube
+🎬 Youtube (با انتخاب کیفیت)
 📸 Instagram (پست و ریلز)
 
 📌 از منوی زیر یکی را انتخاب کنید.
-⏰ {persian_date}"""
+⏰ {current_time}"""
     
     send_message(chat_id, message, get_keyboard())
 
@@ -290,22 +515,70 @@ def handle_callback(data, chat_id, message_id, callback_id):
         return
     
     if data == 'channel':
-        persian_date = format_persian_date(get_tehran_time())
+        current_time = get_current_time()
         message = f"""📢 <b>کانال رسمی {BOT_NAME}</b>
 
 🔗 {CHANNEL_ID}
 
 📱 منتظر شما هستیم! 🎬
-⏰ {persian_date}"""
+⏰ {current_time}"""
         
         edit_message(chat_id, message_id, message, get_back_keyboard())
         return
     
+    if data.startswith('quality_'):
+        parts = data.split('_')
+        youtube_id = parts[1]
+        quality = parts[2]
+        
+        state = get_memory(chat_id)
+        if not state:
+            return
+        
+        url = state.get('link', '')
+        
+        processing_msg = send_message(chat_id, f'⏳ در حال دانلود با کیفیت {quality}...', None)
+        processing_msg_id = processing_msg['result']['message_id'] if processing_msg and processing_msg.get('ok') else None
+        
+        try:
+            video_url = download_youtube_with_quality(youtube_id, quality)
+            
+            if not video_url:
+                raise Exception('ویدیو پیدا نشد')
+            
+            current_time = get_current_time()
+            caption = f"""✅ دانلود موفق!
+
+🎯 Youtube
+🔗 {url}
+📺 کیفیت: {quality}
+📅 {current_time}"""
+            
+            send_video(chat_id, video_url, caption, get_back_keyboard())
+            
+            admin_msg = f"""📤 دانلود جدید
+🎯 Youtube
+📺 کیفیت: {quality}
+📅 {current_time}"""
+            send_message(ADMIN_GROUP_ID, admin_msg)
+            
+            if processing_msg_id:
+                delete_message(chat_id, processing_msg_id)
+            
+            delete_memory(chat_id)
+            
+        except Exception as e:
+            logger.error(f"Download error: {e}")
+            send_message(chat_id, f"❌ خطا: {str(e)}", get_back_keyboard())
+            delete_memory(chat_id)
+        
+        return
+    
     if data.startswith('download_'):
         platform = data.replace('download_', '')
-        set_memory(chat_id, {'platform': platform, 'step': 'waiting_for_link'})
+        set_memory(chat_id, {'platform': platform, 'step': 'waiting_for_link', 'chat_id': chat_id})
         
-        persian_date = format_persian_date(get_tehran_time())
+        current_time = get_current_time()
         
         examples = {
             'TikTok': 'https://www.tiktok.com/@user/video/123456789',
@@ -320,7 +593,7 @@ def handle_callback(data, chat_id, message_id, callback_id):
 مثال:
 {examples.get(platform, '')}
 
-⏰ {persian_date}"""
+⏰ {current_time}"""
         
         edit_message(chat_id, message_id, message, get_back_keyboard())
 
@@ -346,34 +619,48 @@ def handle_message(chat_id, text):
     state['step'] = 'processing'
     set_memory(chat_id, state)
     
+    if platform == 'youtube':
+        youtube_id = extract_youtube_id(text)
+        if youtube_id:
+            state['youtube_id'] = youtube_id
+            set_memory(chat_id, state)
+            
+            current_time = get_current_time()
+            message = f"""🎬 کیفیت مورد نظر را انتخاب کنید:
+
+⏰ {current_time}"""
+            
+            send_message(chat_id, message, get_quality_keyboard(youtube_id))
+        else:
+            send_message(chat_id, '❌ لینک یوتیوب معتبر نیست.', get_back_keyboard())
+        return
+    
     msg = send_message(chat_id, f'⏳ در حال دانلود از <b>{state["platform"]}</b>...', None)
     processing_msg_id = msg['result']['message_id'] if msg and msg.get('ok') else None
     
     try:
         video_url = None
-        if state['platform'] == 'TikTok':
+        if platform == 'tiktok':
             video_url = download_tiktok(text)
-        elif state['platform'] == 'Youtube':
-            video_url = download_youtube(text)
-        elif state['platform'] == 'Instagram':
+        elif platform == 'instagram':
             video_url = download_instagram(text)
         
         if not video_url:
             raise Exception('ویدیو پیدا نشد')
         
-        persian_date = format_persian_date(get_tehran_time())
+        current_time = get_current_time()
         caption = f"""✅ دانلود موفق!
 
 🎯 {state['platform']}
 🔗 {text}
-📅 {persian_date}"""
+📅 {current_time}"""
         
         send_video(chat_id, video_url, caption, get_back_keyboard())
         
         admin_msg = f"""📤 دانلود جدید
 🎯 {state['platform']}
 🔗 {text}
-📅 {persian_date}"""
+📅 {current_time}"""
         send_message(ADMIN_GROUP_ID, admin_msg)
         
         if processing_msg_id:
@@ -427,14 +714,22 @@ def webhook():
 def health():
     return jsonify({
         'status': 'ok',
-        'time': format_persian_date(get_tehran_time())
+        'time': get_current_time()
+    })
+
+@app.route('/time', methods=['GET'])
+def get_time():
+    """دریافت زمان تهران از API"""
+    return jsonify({
+        'time': get_current_time(),
+        'datetime': get_tehran_time_from_api().isoformat()
     })
 
 @app.route('/set-webhook', methods=['GET'])
 def set_webhook():
     try:
         if not WEBHOOK_URL:
-            return jsonify({'error': 'WEBHOOK_URL not set in environment variables'}), 400
+            return jsonify({'error': 'WEBHOOK_URL not set'}), 400
         
         webhook_url = f"{WEBHOOK_URL}/webhook"
         response = requests.get(
@@ -449,8 +744,7 @@ def home():
     return jsonify({
         'name': BOT_NAME,
         'status': 'running',
-        'time': format_persian_date(get_tehran_time()),
-        'webhook_url': f"{WEBHOOK_URL}/webhook" if WEBHOOK_URL else 'Not set'
+        'time': get_current_time()
     })
 
 # ============================================
@@ -468,6 +762,6 @@ if __name__ == '__main__':
         except Exception as e:
             logger.error(f"❌ Webhook error: {e}")
     else:
-        logger.warning("⚠️ WEBHOOK_URL not set. Set it in Railway environment variables.")
+        logger.warning("⚠️ WEBHOOK_URL not set")
     
     app.run(host='0.0.0.0', port=PORT)
