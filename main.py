@@ -1,5 +1,5 @@
 # main.py
-# Telegram Multi Downloader Bot - نسخه نهایی برای Railway
+# Telegram Multi Downloader Bot - نسخه نهایی با Webhook
 
 import os
 import re
@@ -8,8 +8,6 @@ import logging
 import requests
 from datetime import datetime, timedelta, timezone
 from flask import Flask, request, jsonify
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
 # ============================================
 # تنظیمات
@@ -34,32 +32,31 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ============================================
-# حافظه ساده (به جای دیتابیس)
+# حافظه ساده
 # ============================================
 
 memory = {}
 
 def set_memory(chat_id, data):
-    memory[chat_id] = data
+    memory[str(chat_id)] = data
 
 def get_memory(chat_id):
-    return memory.get(chat_id)
+    return memory.get(str(chat_id))
 
 def delete_memory(chat_id):
-    if chat_id in memory:
-        del memory[chat_id]
+    key = str(chat_id)
+    if key in memory:
+        del memory[key]
 
 # ============================================
 # توابع کمکی
 # ============================================
 
 def get_tehran_time():
-    """دریافت زمان تهران"""
     tehran_offset = timedelta(hours=3, minutes=30)
     return datetime.now(timezone.utc).astimezone() + tehran_offset
 
 def format_persian_date(date):
-    """فرمت تاریخ به شمسی"""
     persian_months = [
         'فروردین', 'اردیبهشت', 'خرداد', 'تیر', 'مرداد', 'شهریور',
         'مهر', 'آبان', 'آذر', 'دی', 'بهمن', 'اسفند'
@@ -67,7 +64,6 @@ def format_persian_date(date):
     return date.strftime(f'%d {persian_months[date.month-1]} %Y، ساعت %H:%M:%S')
 
 def extract_youtube_id(url):
-    """استخراج آیدی ویدیو از لینک یوتیوب"""
     patterns = [
         r'(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&]+)',
         r'youtube\.com\/embed\/([^\/]+)',
@@ -80,7 +76,6 @@ def extract_youtube_id(url):
     return None
 
 def extract_instagram_id(url):
-    """استخراج آیدی پست از لینک اینستاگرام"""
     patterns = [
         r'instagram\.com\/(?:p|reel|tv)\/([^\/?]+)',
         r'instagram\.com\/p\/([^\/]+)'
@@ -96,66 +91,33 @@ def extract_instagram_id(url):
 # ============================================
 
 def download_tiktok(url):
-    """دانلود ویدیو از تیک تاک"""
     try:
-        # روش اول: استفاده از API tikwm
         response = requests.get(
             f'https://www.tikwm.com/api/?url={url}',
             timeout=15,
-            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+            headers={'User-Agent': 'Mozilla/5.0'}
         )
         data = response.json()
-        
         if data.get('code') == 0 and data.get('data'):
-            video_url = data['data'].get('play') or data['data'].get('wmplay') or data['data'].get('hdplay')
+            video_url = data['data'].get('play') or data['data'].get('wmplay')
             if video_url:
                 return video_url
         
-        # روش دوم: استفاده از tikmate
-        response = requests.get(
-            f'https://tikmate.online/api/j/convert?url={url}',
-            timeout=15,
-            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        )
-        data = response.json()
-        if data.get('video_url'):
-            return data['video_url']
-        
         raise Exception('ویدیو پیدا نشد')
-        
     except Exception as e:
         logger.error(f"TikTok error: {e}")
-        raise Exception(f"خطا در دانلود تیک تاک: {str(e)}")
+        raise Exception(f"خطا در دانلود تیک تاک")
 
 def download_youtube(url):
-    """دانلود ویدیو از یوتیوب"""
     try:
         youtube_id = extract_youtube_id(url)
         if not youtube_id:
             raise Exception('لینک یوتیوب معتبر نیست')
         
-        # روش اول: استفاده از y2mate
-        response = requests.post(
-            'https://www.y2mate.com/mates/en68/analyze/ajax',
-            data={'url': f'https://www.youtube.com/watch?v={youtube_id}', 'q': '360'},
-            headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Content-Type': 'application/x-www-form-urlencoded'
-            },
-            timeout=20
-        )
-        
-        if response.status_code == 200:
-            text = response.text
-            match = re.search(r'https?://[^"\'s]+\.mp4', text)
-            if match:
-                return match.group(0)
-        
-        # روش دوم: استفاده از vevioz
         response = requests.get(
             f'https://api.vevioz.com/api/button/mp4/{youtube_id}',
             timeout=20,
-            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+            headers={'User-Agent': 'Mozilla/5.0'}
         )
         
         if response.status_code == 200:
@@ -169,23 +131,17 @@ def download_youtube(url):
                     return match.group(0)
         
         raise Exception('ویدیو پیدا نشد')
-        
     except Exception as e:
         logger.error(f"Youtube error: {e}")
-        raise Exception(f"خطا در دانلود یوتیوب: {str(e)}")
+        raise Exception(f"خطا در دانلود یوتیوب")
 
 def download_instagram(url):
-    """دانلود ویدیو از اینستاگرام (پست و ریلز)"""
     try:
         insta_id = extract_instagram_id(url)
         if not insta_id:
             raise Exception('لینک اینستاگرام معتبر نیست')
         
-        # روش اول: استفاده از API رسمی
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        }
-        
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         response = requests.get(
             f'https://www.instagram.com/p/{insta_id}/?__a=1&__d=dis',
             headers=headers,
@@ -198,84 +154,151 @@ def download_instagram(url):
             if video_url:
                 return video_url
         
-        # روش دوم: استفاده از oembed
-        response = requests.get(
-            f'https://api.instagram.com/oembed?url={url}',
-            timeout=15
-        )
-        
-        if response.status_code == 200:
-            data = response.json()
-            if data.get('thumbnail_url'):
-                return data['thumbnail_url']
-        
         raise Exception('ویدیو پیدا نشد')
-        
     except Exception as e:
         logger.error(f"Instagram error: {e}")
-        raise Exception(f"خطا در دانلود اینستاگرام: {str(e)}")
+        raise Exception(f"خطا در دانلود اینستاگرام")
 
 # ============================================
-# هندلرهای تلگرام
+# توابع ارسال به تلگرام
 # ============================================
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """دستور /start"""
-    chat_id = update.effective_chat.id
+def send_message(chat_id, text, reply_markup=None):
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    data = {
+        'chat_id': chat_id,
+        'text': text,
+        'parse_mode': 'HTML'
+    }
+    if reply_markup:
+        data['reply_markup'] = json.dumps(reply_markup)
+    
+    try:
+        response = requests.post(url, data=data, timeout=10)
+        return response.json()
+    except Exception as e:
+        logger.error(f"Send message error: {e}")
+        return None
+
+def edit_message(chat_id, message_id, text, reply_markup=None):
+    url = f"https://api.telegram.org/bot{TOKEN}/editMessageText"
+    data = {
+        'chat_id': chat_id,
+        'message_id': message_id,
+        'text': text,
+        'parse_mode': 'HTML'
+    }
+    if reply_markup:
+        data['reply_markup'] = json.dumps(reply_markup)
+    
+    try:
+        response = requests.post(url, data=data, timeout=10)
+        return response.json()
+    except Exception as e:
+        logger.error(f"Edit message error: {e}")
+        return None
+
+def send_video(chat_id, video_url, caption, reply_markup=None):
+    url = f"https://api.telegram.org/bot{TOKEN}/sendVideo"
+    data = {
+        'chat_id': chat_id,
+        'video': video_url,
+        'caption': caption,
+        'parse_mode': 'HTML',
+        'supports_streaming': True
+    }
+    if reply_markup:
+        data['reply_markup'] = json.dumps(reply_markup)
+    
+    try:
+        response = requests.post(url, data=data, timeout=30)
+        return response.json()
+    except Exception as e:
+        logger.error(f"Send video error: {e}")
+        return None
+
+def answer_callback(callback_id):
+    url = f"https://api.telegram.org/bot{TOKEN}/answerCallbackQuery"
+    data = {'callback_query_id': callback_id}
+    
+    try:
+        response = requests.post(url, data=data, timeout=5)
+        return response.json()
+    except:
+        return None
+
+def delete_message(chat_id, message_id):
+    url = f"https://api.telegram.org/bot{TOKEN}/deleteMessage"
+    data = {'chat_id': chat_id, 'message_id': message_id}
+    
+    try:
+        response = requests.post(url, data=data, timeout=5)
+        return response.json()
+    except:
+        return None
+
+# ============================================
+# کیبوردها
+# ============================================
+
+def get_keyboard():
+    return {
+        'inline_keyboard': [
+            [
+                {'text': '🎵 TikTok', 'callback_data': 'download_TikTok'},
+                {'text': '🎬 Youtube', 'callback_data': 'download_Youtube'},
+            ],
+            [
+                {'text': '📸 Instagram', 'callback_data': 'download_Instagram'},
+                {'text': '📢 کانال', 'callback_data': 'channel'},
+            ],
+        ]
+    }
+
+def get_back_keyboard():
+    return {
+        'inline_keyboard': [
+            [{'text': '🔙 بازگشت', 'callback_data': 'main_menu'}]
+        ]
+    }
+
+# ============================================
+# هندلرها
+# ============================================
+
+def handle_start(chat_id):
     persian_date = format_persian_date(get_tehran_time())
     
     message = f"""👋 به <b>{BOT_NAME}</b> خوش آمدید!
 
-🎯 این ربات به شما کمک می‌کند تا ویدیوهای مورد نظر خود را از پلتفرم‌های زیر دانلود کنید:
+🎯 این ربات به شما کمک می‌کند تا ویدیوهای مورد نظر خود را دانلود کنید:
 
 🎵 TikTok
 🎬 Youtube
 📸 Instagram (پست و ریلز)
 
-📌 لطفاً از منوی زیر یکی از گزینه‌ها را انتخاب کنید.
-⏰ زمان تهران: {persian_date}"""
+📌 از منوی زیر یکی را انتخاب کنید.
+⏰ {persian_date}"""
     
-    keyboard = [
-        [
-            InlineKeyboardButton("🎵 TikTok", callback_data="download_TikTok"),
-            InlineKeyboardButton("🎬 Youtube", callback_data="download_Youtube"),
-        ],
-        [
-            InlineKeyboardButton("📸 Instagram", callback_data="download_Instagram"),
-            InlineKeyboardButton("📢 کانال", callback_data="channel"),
-        ],
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(message, parse_mode='HTML', reply_markup=reply_markup)
+    send_message(chat_id, message, get_keyboard())
 
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """پاسخ به دکمه‌ها"""
-    query = update.callback_query
-    await query.answer()
-    
-    chat_id = query.message.chat.id
-    data = query.data
+def handle_callback(data, chat_id, message_id, callback_id):
+    answer_callback(callback_id)
     
     if data == 'main_menu':
-        await start(update, context)
+        handle_start(chat_id)
         return
     
     if data == 'channel':
         persian_date = format_persian_date(get_tehran_time())
         message = f"""📢 <b>کانال رسمی {BOT_NAME}</b>
 
-برای دسترسی به آخرین ویدیوها و محتوای جدید، به کانال ما بپیوندید:
-
 🔗 {CHANNEL_ID}
 
 📱 منتظر شما هستیم! 🎬
 ⏰ {persian_date}"""
         
-        keyboard = [[InlineKeyboardButton("🔙 بازگشت", callback_data="main_menu")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(message, parse_mode='HTML', reply_markup=reply_markup)
+        edit_message(chat_id, message_id, message, get_back_keyboard())
         return
     
     if data.startswith('download_'):
@@ -292,69 +315,42 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         message = f"""📥 دانلود از <b>{platform}</b>
 
-🔗 لطفاً لینک ویدیو را ارسال کنید:
+🔗 لینک ویدیو را ارسال کنید:
 
 مثال:
 {examples.get(platform, '')}
 
-⏰ زمان تهران: {persian_date}"""
+⏰ {persian_date}"""
         
-        keyboard = [[InlineKeyboardButton("🔙 بازگشت", callback_data="main_menu")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(message, parse_mode='HTML', reply_markup=reply_markup)
+        edit_message(chat_id, message_id, message, get_back_keyboard())
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """پردازش پیام‌ها"""
-    chat_id = update.effective_chat.id
-    text = update.message.text
-    
+def handle_message(chat_id, text):
     state = get_memory(chat_id)
     
     if not state or state.get('step') != 'waiting_for_link':
-        keyboard = [
-            [
-                InlineKeyboardButton("🎵 TikTok", callback_data="download_TikTok"),
-                InlineKeyboardButton("🎬 Youtube", callback_data="download_Youtube"),
-            ],
-            [
-                InlineKeyboardButton("📸 Instagram", callback_data="download_Instagram"),
-                InlineKeyboardButton("📢 کانال", callback_data="channel"),
-            ],
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await update.message.reply_text(
-            '⚠️ لطفاً ابتدا از منوی اصلی یک پلتفرم انتخاب کنید.',
-            reply_markup=reply_markup
-        )
+        send_message(chat_id, '⚠️ ابتدا از منو یک پلتفرم انتخاب کنید.', get_keyboard())
         return
     
-    # اعتبارسنجی لینک
     platform = state['platform'].lower()
     url_patterns = {
-        'tiktok': r'(https?:\/\/)?(www\.)?(tiktok\.com|vm\.tiktok\.com)\/.+',
-        'youtube': r'(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\/.+',
-        'instagram': r'(https?:\/\/)?(www\.)?(instagram\.com|instagr\.am)\/.+',
+        'tiktok': r'(https?://)?(www\.)?(tiktok\.com|vm\.tiktok\.com)/.+',
+        'youtube': r'(https?://)?(www\.)?(youtube\.com|youtu\.be)/.+',
+        'instagram': r'(https?://)?(www\.)?(instagram\.com|instagr\.am)/.+',
     }
     
     if not re.match(url_patterns[platform], text, re.I):
-        await update.message.reply_text('❌ لینک وارد شده معتبر نیست. لطفاً دوباره تلاش کنید.')
+        send_message(chat_id, '❌ لینک معتبر نیست. دوباره تلاش کنید.')
         return
     
     state['link'] = text
     state['step'] = 'processing'
     set_memory(chat_id, state)
     
-    processing_msg = await update.message.reply_text(
-        f'⏳ در حال دانلود ویدیو از <b>{state["platform"]}</b>...',
-        parse_mode='HTML'
-    )
+    msg = send_message(chat_id, f'⏳ در حال دانلود از <b>{state["platform"]}</b>...', None)
+    processing_msg_id = msg['result']['message_id'] if msg and msg.get('ok') else None
     
     try:
-        # دانلود ویدیو
         video_url = None
-        
         if state['platform'] == 'TikTok':
             video_url = download_tiktok(text)
         elif state['platform'] == 'Youtube':
@@ -365,46 +361,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not video_url:
             raise Exception('ویدیو پیدا نشد')
         
-        # ارسال ویدیو
         persian_date = format_persian_date(get_tehran_time())
-        
-        caption = f"""✅ دانلود با موفقیت انجام شد!
+        caption = f"""✅ دانلود موفق!
 
-🎯 پلتفرم: <b>{state['platform']}</b>
-🔗 لینک: {text}
-📅 تاریخ و ساعت: {persian_date}"""
+🎯 {state['platform']}
+🔗 {text}
+📅 {persian_date}"""
         
-        keyboard = [[InlineKeyboardButton("🔙 بازگشت", callback_data="main_menu")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        send_video(chat_id, video_url, caption, get_back_keyboard())
         
-        await update.message.reply_video(
-            video_url,
-            caption=caption,
-            parse_mode='HTML',
-            reply_markup=reply_markup,
-            supports_streaming=True
-        )
+        admin_msg = f"""📤 دانلود جدید
+🎯 {state['platform']}
+🔗 {text}
+📅 {persian_date}"""
+        send_message(ADMIN_GROUP_ID, admin_msg)
         
-        # ارسال به گروه ادمین
-        admin_message = f"""📤 دانلود انجام شد
-🎯 پلتفرم: {state['platform']}
-🔗 لینک: {text}
-📅 تاریخ: {persian_date}"""
+        if processing_msg_id:
+            delete_message(chat_id, processing_msg_id)
         
-        await context.bot.send_message(chat_id=ADMIN_GROUP_ID, text=admin_message)
-        
-        # پاک کردن پیام پردازش
-        await processing_msg.delete()
         delete_memory(chat_id)
         
     except Exception as e:
         logger.error(f"Download error: {e}")
-        
-        error_message = f"❌ خطا در دانلود ویدیو. {str(e)}"
-        keyboard = [[InlineKeyboardButton("🔙 بازگشت", callback_data="main_menu")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await update.message.reply_text(error_message, reply_markup=reply_markup)
+        send_message(chat_id, f"❌ خطا: {str(e)}", get_back_keyboard())
         delete_memory(chat_id)
 
 # ============================================
@@ -413,40 +392,49 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 app = Flask(__name__)
 
-# ایجاد اپلیکیشن تلگرام
-application = Application.builder().token(TOKEN).build()
-
-# ثبت هندلرها
-application.add_handler(CommandHandler('start', start))
-application.add_handler(CallbackQueryHandler(button_callback))
-application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    """دریافت درخواست‌های تلگرام"""
     try:
-        update = Update.de_json(request.get_json(force=True), application.bot)
-        application.process_update(update)
+        data = request.get_json()
+        
+        if 'message' in data:
+            msg = data['message']
+            chat_id = msg['chat']['id']
+            
+            if 'text' in msg:
+                text = msg['text']
+                if text == '/start':
+                    handle_start(chat_id)
+                else:
+                    handle_message(chat_id, text)
+        
+        elif 'callback_query' in data:
+            cb = data['callback_query']
+            chat_id = cb['message']['chat']['id']
+            message_id = cb['message']['message_id']
+            callback_id = cb['id']
+            data_cb = cb['data']
+            
+            handle_callback(data_cb, chat_id, message_id, callback_id)
+        
         return 'OK', 200
+        
     except Exception as e:
         logger.error(f"Webhook error: {e}")
         return 'Error', 500
 
 @app.route('/health', methods=['GET'])
 def health():
-    """بررسی سلامت"""
     return jsonify({
         'status': 'ok',
-        'time': format_persian_date(get_tehran_time()),
-        'bot': BOT_NAME
+        'time': format_persian_date(get_tehran_time())
     })
 
 @app.route('/set-webhook', methods=['GET'])
 def set_webhook():
-    """تنظیم Webhook"""
     try:
         if not WEBHOOK_URL:
-            return jsonify({'error': 'WEBHOOK_URL not set'}), 400
+            return jsonify({'error': 'WEBHOOK_URL not set in environment variables'}), 400
         
         webhook_url = f"{WEBHOOK_URL}/webhook"
         response = requests.get(
@@ -458,11 +446,11 @@ def set_webhook():
 
 @app.route('/', methods=['GET'])
 def home():
-    """صفحه اصلی"""
     return jsonify({
         'name': BOT_NAME,
-        'status': 'active',
-        'time': format_persian_date(get_tehran_time())
+        'status': 'running',
+        'time': format_persian_date(get_tehran_time()),
+        'webhook_url': f"{WEBHOOK_URL}/webhook" if WEBHOOK_URL else 'Not set'
     })
 
 # ============================================
@@ -470,17 +458,16 @@ def home():
 # ============================================
 
 if __name__ == '__main__':
-    # تنظیم Webhook در شروع
     if WEBHOOK_URL:
         try:
             webhook_url = f"{WEBHOOK_URL}/webhook"
             response = requests.get(
                 f"https://api.telegram.org/bot{TOKEN}/setWebhook?url={webhook_url}"
             )
-            logger.info(f"Webhook set: {response.json()}")
+            logger.info(f"✅ Webhook set: {response.json()}")
         except Exception as e:
-            logger.error(f"Failed to set webhook: {e}")
+            logger.error(f"❌ Webhook error: {e}")
     else:
-        logger.warning("WEBHOOK_URL not set, using polling mode")
+        logger.warning("⚠️ WEBHOOK_URL not set. Set it in Railway environment variables.")
     
     app.run(host='0.0.0.0', port=PORT)
